@@ -1,0 +1,99 @@
+# ecg_dac_stream.py
+
+# rev00 - uso do DAC interno (8 bits)
+# rev01 - uso do DAC externo mcp4725 (12 bits)
+
+# MicroPython para ESP32-WROOM (30 pinos)
+# Lê Paciente1.csv e envia a coluna 'I' para o DAC externo MCP4725 via I2C
+
+import machine
+import time
+import mcp4725
+
+CAMINHO_CSV = 'Paciente1.csv'   # Arquivo deve estar no sistema de arquivos do ESP32
+
+# coloque aqui o nome da coluna desejada
+#COLUNA_CSV = 'I'
+#COLUNA_CSV = 'aVF'
+COLUNA_CSV = 'Pleth'
+
+TAXA_AMOSTRAGEM_HZ = 250        # Ajuste conforme necessário
+I2C_SDA = 21                    # Pino SDA (ajuste conforme seu hardware)
+I2C_SCL = 22                    # Pino SCL (ajuste conforme seu hardware)
+MCP4725_ADDR = 0x60             # Endereço padrão do MCP4725
+
+def ler_coluna_I(caminho_csv):
+    """Lê o arquivo CSV e retorna lista de floats da coluna desejada."""
+    amostras = []
+    with open(caminho_csv, 'r') as f:
+        cabecalho = f.readline().strip().split(',')
+        try:
+            #indice_I = cabecalho.index('I')
+            indice_I = cabecalho.index(COLUNA_CSV)
+            
+        except ValueError:
+            raise ValueError("Coluna não encontrada no cabeçalho do CSV.")
+
+        for linha in f:
+            linha = linha.strip()
+            if not linha:
+                continue
+            partes = linha.split(',')
+            if len(partes) <= indice_I:
+                continue
+            try:
+                valor = float(partes[indice_I])
+            except:
+                continue
+            amostras.append(valor)
+    if not amostras:        
+        raise ValueError("Nenhuma amostra válida encontrada na coluna", COLUNA_CSV)
+    return amostras
+
+def normalizar_para_dac12(amostras):
+    """Converte valores float para faixa de 12 bits [0..4095]."""
+    vmin = min(amostras)
+    vmax = max(amostras)
+    if vmax == vmin:
+        return [2048] * len(amostras)  # Meio da escala
+
+    escala = 4095.0 / (vmax - vmin)
+    valores_dac = []
+    for v in amostras:
+        x = int((v - vmin) * escala)
+        if x < 0: x = 0
+        if x > 4095: x = 4095
+        valores_dac.append(x)
+    return valores_dac, vmin, vmax
+
+    
+def main():
+    # Inicializa I2C
+    i2c_mcp4725 = machine.I2C(0, scl=machine.Pin(I2C_SCL), sda=machine.Pin(I2C_SDA), freq=400000)
+            
+    #create the MCP4725 driver    
+    dac=mcp4725.MCP4725(i2c_mcp4725, MCP4725_ADDR)
+
+    # Carrega dados    
+    print("Lendo coluna", COLUNA_CSV, "de", CAMINHO_CSV)
+    
+    amostras_coluna = ler_coluna_I(CAMINHO_CSV)
+
+    # Normaliza para DAC 12 bits
+    saida, vmin, vmax = normalizar_para_dac12(amostras_coluna)
+    print("Total de amostras:", len(saida), "mínimo:", vmin, "máximo:", vmax)
+
+    # Define período de amostragem
+    periodo_us = int(1_000_000 / TAXA_AMOSTRAGEM_HZ)
+    print("Taxa de amostragem:", TAXA_AMOSTRAGEM_HZ, "Hz (", periodo_us, "us por amostra )")
+
+    # Loop de reprodução contínua
+    while True:
+        for valor in saida:            
+            dac.write(valor)
+
+            time.sleep_us(periodo_us)
+
+# Ponto de entrada
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,92 @@
+# ecg_dac_stream.py
+
+# rev00 - uso do DAC interno (DAC 8 bits)
+
+# MicroPython para ESP32-WROOM (30 pinos)
+# Lê Paciente1.csv e envia a coluna 'I' para o DAC interno (GPIO25)
+
+import machine
+import time
+
+CAMINHO_CSV = 'Paciente1.csv'   # Arquivo deve estar no sistema de arquivos do ESP32
+PIN_DAC = 25                    # GPIO25 = DAC1
+TAXA_AMOSTRAGEM_HZ = 250        # Ajuste conforme necessário (ex.: 250 ou 360 Hz)
+
+COLUNA_CSV = 'I'
+#COLUNA_CSV = 'aVF'
+#COLUNA_CSV = 'Pleth'
+
+def ler_coluna_I(caminho_csv):
+    """
+    Lê o arquivo CSV e retorna uma lista de amostras (float) da coluna 'I'.
+    Assume que a primeira linha é o cabeçalho: V,II,aVR,I,III,aVL,aVF,Pleth,Resp
+    """
+    amostras = []
+    with open(caminho_csv, 'r') as f:
+        cabecalho = f.readline().strip().split(',')
+        try:
+            indice_I = cabecalho.index(COLUNA_CSV)
+            #indice_I = cabecalho.index('I')
+        except ValueError:
+            raise ValueError("Coluna 'I' não encontrada no cabeçalho do CSV.")
+
+        for linha in f:
+            linha = linha.strip()
+            if not linha:
+                continue
+            partes = linha.split(',')
+            if len(partes) <= indice_I:
+                continue
+            try:
+                valor = float(partes[indice_I])
+            except:
+                continue
+            amostras.append(valor)
+    if not amostras:
+        raise ValueError("Nenhuma amostra válida encontrada na coluna 'I'.")
+    return amostras
+
+def normalizar_para_dac(amostras):
+    """
+    Converte valores float para faixa de 8 bits do DAC [0..255].
+    Se todos os valores forem iguais, centraliza em 127.
+    """
+    vmin = min(amostras)
+    vmax = max(amostras)
+    if vmax == vmin:
+        return [127] * len(amostras)
+
+    escala = 255.0 / (vmax - vmin)
+    valores_dac = []
+    for v in amostras:
+        x = int((v - vmin) * escala)
+        if x < 0: x = 0
+        if x > 255: x = 255
+        valores_dac.append(x)
+    return valores_dac, vmin, vmax
+
+def main():
+    # Configura DAC no GPIO25
+    dac = machine.DAC(machine.Pin(PIN_DAC))
+
+    # Carrega dados
+    print("Lendo coluna 'I' de", CAMINHO_CSV)
+    amostras_I = ler_coluna_I(CAMINHO_CSV)
+
+    # Normaliza para DAC
+    saida, vmin, vmax = normalizar_para_dac(amostras_I)
+    print("Total de amostras:", len(saida), "mínimo:", vmin, "máximo:", vmax)
+
+    # Define período de amostragem
+    periodo_us = int(1_000_000 / TAXA_AMOSTRAGEM_HZ)
+    print("Taxa de amostragem:", TAXA_AMOSTRAGEM_HZ, "Hz (", periodo_us, "us por amostra )")
+
+    # Loop de reprodução contínua
+    while True:
+        for v in saida:
+            dac.write(v)       # Valor entre 0..255
+            time.sleep_us(periodo_us)
+
+# Ponto de entrada
+if __name__ == '__main__':
+    main()
